@@ -1,0 +1,28 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/crawler
+    username: postgres
+    password: postgres
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+
+crawler:
+  redis:
+    host: localhost
+    port: 6379
+  threads: 5
+  retry:
+    max-attempts: 3
+    sleep: 3000
+  timeout: 5000
+  sleep: 1000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: prometheus
