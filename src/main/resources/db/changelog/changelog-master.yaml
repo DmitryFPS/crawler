@@ -1,0 +1,7 @@
+databaseChangeLog:
+  - include:
+      file: 000-create-base-tables.sql
+      relativeToChangelogFile: true
+  - include:
+      file: 001-enhance-crawler-schema.sql
+      relativeToChangelogFile: true
