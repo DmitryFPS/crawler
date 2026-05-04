@@ -60,12 +60,17 @@ public class CrawlerService {
                 ? request.getThreads()
                 : properties.getThreads();
 
+        String seleniumHub = System.getenv("SELENIUM_HUB_URL");
+        if (seleniumHub == null || seleniumHub.isBlank()) {
+            seleniumHub = "http://selenium:4444/wd/hub";
+        }
+
         final Spider spider = Spider.create(processor)
                 .addUrl(request.getUrl())
                 .addPipeline(postgresPipeline)
                 .setScheduler(new RedisScheduler(jedisPool))
                 .thread(threads)
-                .setDownloader(new SeleniumDownloader());
+                .setDownloader(new SeleniumDownloader(seleniumHub));
 
         final Thread thread = new Thread(spider::start, "crawler-" + jobId);
         thread.setDaemon(false);

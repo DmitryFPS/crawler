@@ -27,6 +27,27 @@ services:
       timeout: 5s
       retries: 5
 
+  selenium:
+    image: selenium/standalone-chrome:latest
+    container_name: crawler-selenium
+    shm_size: 4gb  # Важно для Chrome
+    environment:
+      - SE_NODE_MAX_SESSIONS=3  # Макс. параллельных сессий
+      - SE_SCREEN_WIDTH=1920
+      - SE_SCREEN_HEIGHT=1080
+    ports:
+      - "4444:4444"  # WebDriver hub
+      - "7900:7900"  # VNC для отладки (опционально)
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:4444/wd/hub/status" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 3G  # Выделить память
+
   app:
     build: .
     container_name: crawler-app
@@ -34,6 +55,8 @@ services:
       postgres:
         condition: service_healthy  # Ждать, пока БД не станет доступна
       redis:
+        condition: service_healthy
+      selenium: # Ждём Selenium
         condition: service_healthy
     ports:
       - "8080:8080"
@@ -43,9 +66,14 @@ services:
       SPRING_DATASOURCE_PASSWORD: postgres
       CRAWLER_REDIS_HOST: redis
       CRAWLER_REDIS_PORT: 6379
+      SELENIUM_HUB_URL: http://selenium:4444/wd/hub
       SPRING_LIQUIBASE_ENABLED: "true"
       MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,prometheus,metrics"
       MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "always"
+    deploy:
+      resources:
+        limits:
+          memory: 1G  # App теперь легче, Chrome вынесен
 
   prometheus:
     image: prom/prometheus

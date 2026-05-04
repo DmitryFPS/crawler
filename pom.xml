@@ -94,6 +94,7 @@
             <scope>provided</scope>
         </dependency>
 
+        <!-- Selenium + WebDriver Manager -->
         <dependency>
             <groupId>org.seleniumhq.selenium</groupId>
             <artifactId>selenium-java</artifactId>
