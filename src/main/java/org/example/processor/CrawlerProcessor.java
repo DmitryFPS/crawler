@@ -28,6 +28,8 @@ public class CrawlerProcessor implements PageProcessor {
     private final List<String> keywords;
     private final String jobId;
     private final int maxDepth;
+    private final Set<String> visited = new HashSet<>();
+
 
     public CrawlerProcessor(final MetricsService metrics,
                             final CrawlerProperties properties,
@@ -53,20 +55,17 @@ public class CrawlerProcessor implements PageProcessor {
                     return;
                 }
 
-                // Фильтр по расширениям
                 if (currentUrl.matches(".*\\.(pdf|jpg|png|zip|exe|gif|mp4|mp3|ico|css|js)$")) {
                     page.setSkip(true);
                     return;
                 }
 
-                // Читаем метаданные из extras (не из headers!)
                 final String startUrl = page.getRequest().getExtra("startUrl") != null
                         ? page.getRequest().getExtra("startUrl").toString()
                         : currentUrl;
 
                 final int currentDepth = parseDepth(page.getRequest().getExtra("crawlDepth"));
 
-                // Извлечение данных
                 final String content = page.getHtml().get();
                 if (content == null || content.isEmpty()) {
                     page.setSkip(true);
@@ -82,38 +81,30 @@ public class CrawlerProcessor implements PageProcessor {
                 pageData.setDomain(DomainUtils.extractDomain(currentUrl));
                 pageData.setCrawlDepth(currentDepth);
 
-                // Расчёт релевантности
-                final double score = rankingService.calculateScore(
+                // СНАЧАЛА считаем keywordMatches
+                final int matches = countKeywordMatches(pageData.getContentText(), keywords);
+                pageData.setKeywordMatches(matches);
+
+                double score = rankingService.calculateScore(
                         pageData.getContentText(),
                         pageData.getTitle(),
                         pageData.getH1(),
                         keywords
                 );
 
-                // БЛОК — с пороговыми значениями:
-                // Пропускаем нерелевантные (кроме стартовой)
-                // Страница проходит, если: высокий score ИЛИ достаточно вхождений ключевых слов
-                if (score < 0.2 &&
-                        pageData.getKeywordMatches() < 1 &&
-                        !currentUrl.equals(startUrl)) {
-
-                    metrics.pageSkippedByKeyword();
-                    log.debug("Skipped page (low relevance): {} | score: {} | matches: {} | keywords: {}",
-                            currentUrl, score, pageData.getKeywordMatches(), keywords);
-                    page.setSkip(true);
-                    return;
-                }
-
                 pageData.setScore(score);
-                pageData.setKeywordMatches(countKeywordMatches(pageData.getContentText(), keywords));
                 pageData.setStatus("processed");
 
-                page.putField("pageContent", pageData);
-
-                // Добавляем ссылки ТОЛЬКО если страница релевантна
-                if (score > 0 || currentUrl.equals(startUrl)) {
-                    addFilteredLinks(page, startUrl, currentDepth);
+                // НЕ БЛОКИРУЕМ страницы — просто помечаем
+                if (score < 0.1 && matches == 0 && !currentUrl.equals(startUrl)) {
+                    metrics.pageSkippedByKeyword();
+                    log.debug("Low relevance: {}", currentUrl);
+                } else {
+                    page.putField("pageContent", pageData);
                 }
+
+                // ВСЕГДА идём дальше по сайту
+                addFilteredLinks(page, startUrl, currentDepth);
 
                 metrics.pageProcessed();
 
@@ -128,54 +119,45 @@ public class CrawlerProcessor implements PageProcessor {
     private void addFilteredLinks(final Page page,
                                   final String startUrl,
                                   final int currentDepth) {
+
         if (currentDepth >= maxDepth) {
             return;
         }
 
         final List<String> links = page.getHtml().links().all();
-        final Set<String> added = new HashSet<>();
 
         for (String link : links) {
             String normalized = UrlNormalizer.normalize(link);
-            if (normalized == null || added.contains(normalized)) {
+
+            if (normalized == null) continue;
+
+            // мусор
+            if (normalized.matches(".*\\.(pdf|jpg|png|zip|exe|gif|mp4|mp3|ico|css|js)$")) {
+                continue;
+            }
+            if (normalized.contains("#")) {
                 continue;
             }
 
-            // Фильтр по домену
+            // домен
             if (!DomainUtils.isSameDomain(startUrl, normalized)) {
                 continue;
             }
 
-            // Фильтр по ключевым словам в URL — управляется настройкой
-            if (properties.getFilter().isUrlsByKeywords() && keywords != null && !keywords.isEmpty()) {
-                if (!urlContainsKeywords(normalized, keywords)) {
-                    continue;
-                }
+            // дубликаты
+            if (visited.contains(normalized)) {
+                continue;
             }
 
-            // Создаём НОВЫЙ Request вместо .clone()
+            visited.add(normalized);
+
             final Request newRequest = new Request(normalized);
             newRequest.putExtra("startUrl", startUrl);
             newRequest.putExtra("crawlDepth", currentDepth + 1);
             newRequest.putExtra("jobId", jobId);
-            // Копируем остальные экстра, если нужно
-            page.getRequest().getExtras().forEach(newRequest::putExtra);
 
             page.addTargetRequest(newRequest);
-            added.add(normalized);
         }
-    }
-
-    private boolean urlContainsKeywords(final String url,
-                                        final List<String> keywords) {
-        if (keywords == null || keywords.isEmpty()) {
-            return true;
-        }
-
-        final String lower = url.toLowerCase();
-
-        return keywords.stream()
-                .anyMatch(k -> lower.contains(k.toLowerCase()));
     }
 
     private int countKeywordMatches(final String content, final List<String> keywords) {
