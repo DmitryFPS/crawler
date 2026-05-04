@@ -8,10 +8,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @Getter
 @Setter
 public class CrawlerProperties {
-    private int threads = 5;
+    private int threads = 10;
     private int timeout = 10000;
-    private int sleep = 2000;
-    private int maxDepth = 3;
+    private int sleep = 1000;
+    private int maxDepth = 10;
     private Retry retry = new Retry();
     private RateLimit rateLimit = new RateLimit();
     private Filter filter = new Filter();

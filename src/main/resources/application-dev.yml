@@ -1,0 +1,54 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/crawler
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+  liquibase:
+    enabled: false  # ← Отключить, пока нет миграций
+    change-log: classpath:db/changelog/db.changelog-master.xml
+  jpa:
+    show-sql: true
+    hibernate:
+      ddl-auto: update
+
+crawler:
+  redis:
+    host: localhost
+    port: 6379
+    timeout: 5000
+
+selenium:
+  hub:
+    url: http://localhost:4444/wd/hub
+  chrome:
+    options: "--window-size=1920,1080 --headless=new"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+
+# Логирование для отладки
+logging:
+  level:
+    root: INFO
+    org.springframework.web: DEBUG
+    org.seleniumhq.selenium: DEBUG
+    org.example: DEBUG
+    org.example.pipeline: DEBUG
+    org.example.processor: DEBUG
+    org.example.downloader: DEBUG
