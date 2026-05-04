@@ -20,12 +20,10 @@ import java.util.Map;
 public class SeleniumDownloader implements Downloader, AutoCloseable {
 
     private final String seleniumHubUrl;
-    private final Duration pageLoadTimeout = Duration.ofSeconds(60);
-    private final Duration explicitWaitTimeout = Duration.ofSeconds(15);
-    private final String contentSelector = "article, main, .content, [role='main'], .post-content, .article-body";
+    private final Duration pageLoadTimeout = Duration.ofSeconds(120);
 
     public SeleniumDownloader(final String hubUrl) {
-        // 🔽 Проверка URL
+        // Проверка URL
         this.seleniumHubUrl = hubUrl != null && !hubUrl.isBlank()
                 ? hubUrl
                 : "http://selenium:4444/wd/hub";
@@ -36,7 +34,7 @@ public class SeleniumDownloader implements Downloader, AutoCloseable {
     @Override
     public Page download(final Request request,
                          final Task task) {
-        // 🔽 Проверка URL страницы
+        // Проверка URL страницы
         String pageUrl = request.getUrl();
         if (pageUrl == null || pageUrl.isBlank()) {
             log.error("Request URL is null or empty");
@@ -66,7 +64,7 @@ public class SeleniumDownloader implements Downloader, AutoCloseable {
             options.addArguments("--disable-notifications");
             options.addArguments("--disable-popup-blocking");
             options.addArguments("--disable-extensions");
-            options.setPageLoadStrategy(PageLoadStrategy.NORMAL);
+            options.setPageLoadStrategy(PageLoadStrategy.EAGER);
 
             // Настройки приватности
             Map<String, Object> prefs = new HashMap<>();
@@ -84,7 +82,8 @@ public class SeleniumDownloader implements Downloader, AutoCloseable {
             // СКРИПТЫ ДЛЯ ОБХОДА ДЕТЕКТОВ:
             final JavascriptExecutor js = (JavascriptExecutor) driver;
             js.executeScript("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})");
-            js.executeScript("window.chrome = { runtime: {} };");
+            js.executeScript("Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]})");
+            js.executeScript("window.chrome = {runtime: {}};");
 
             // Переход на страницу
             log.debug("Navigating to: {}", pageUrl);
@@ -104,6 +103,9 @@ public class SeleniumDownloader implements Downloader, AutoCloseable {
             page.setRequest(request);
             page.setRawText(html);
             page.setUrl(new PlainText(pageUrl));
+
+            page.setStatusCode(200);
+            page.setDownloadSuccess(true);
 
             log.debug("Successfully downloaded: {} ({} chars)", pageUrl, html != null ? html.length() : 0);
             return page;

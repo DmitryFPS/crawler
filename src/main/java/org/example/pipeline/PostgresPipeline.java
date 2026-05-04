@@ -31,8 +31,17 @@ public class PostgresPipeline implements Pipeline {
     @Override
     public void process(final ResultItems items,
                         final Task task) {
+
+        log.info(">>> PostgresPipeline.process() called. pageContent={}",
+                items.get("pageContent") != null
+                        ? ((PageContent) items.get("pageContent")).getUrl()
+                        : "NULL");
+
         final PageContent data = items.get("pageContent");
         if (data == null) {
+            log.debug("PostgresPipeline: skipping - no pageContent in ResultItems for task {}",
+                    task.getUUID());
+
             return;
         }
 
@@ -67,10 +76,11 @@ public class PostgresPipeline implements Pipeline {
             stmt.setTimestamp(11, Timestamp.from(Instant.now()));
 
             stmt.executeUpdate();
-            log.debug("Saved page: {} (score: {})", data.getUrl(), data.getScore());
+            log.info("✓ Saved page: {} (score: {}, matches: {})",
+                    data.getUrl(), data.getScore(), data.getKeywordMatches());
 
         } catch (final SQLException e) {
-            log.error("Failed to save page: {}", data.getUrl(), e);
+            log.error("✗ Failed to save page: {}", data.getUrl(), e);
             metricsService.pageFailed();
         }
     }

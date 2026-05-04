@@ -46,3 +46,9 @@ management:
   endpoint:
     health:
       show-details: always
+
+logging:
+  level:
+    org.example.pipeline.PostgresPipeline: DEBUG
+    us.codecraft.webmagic: DEBUG
+    com.zaxxer.hikari: DEBUG

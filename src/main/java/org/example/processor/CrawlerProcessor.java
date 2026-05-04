@@ -16,7 +16,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Slf4j
@@ -171,12 +170,26 @@ public class CrawlerProcessor implements PageProcessor {
 
             // Экранируем спецсимволы и добавляем границы слова
             final String kw = Pattern.quote(keyword.toLowerCase(Locale.ROOT));
-            final Pattern pattern = Pattern.compile("\\b" + kw + "\\b",
-                    Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
-            final Matcher matcher = pattern.matcher(lower);
 
-            while (matcher.find()) totalMatches++;
+            int idx = 0;
+            while ((idx = lower.indexOf(kw, idx)) != -1) {
+                totalMatches++;
+                idx += kw.length();
+            }
+
+//            final Pattern pattern = Pattern.compile("\\b" + kw + "\\b",
+//                    Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+//            final Matcher matcher = pattern.matcher(lower);
+//            while (matcher.find()) totalMatches++;
+
+            // 🔴 ОТЛАДОЧНЫЙ ЛОГ — критически важен!
+            if (totalMatches > 0) {
+                log.info(">>> Keyword matches found: keyword='{}', count={}, contentPreview='{}'",
+                        keywords, totalMatches,
+                        lower.substring(0, Math.min(200, lower.length())).replaceAll("\\s+", " "));
+            }
         }
+
         return totalMatches;
     }
 

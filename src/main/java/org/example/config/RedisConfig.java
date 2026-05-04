@@ -1,7 +1,9 @@
 package org.example.config;
 
+import jakarta.annotation.PostConstruct;
 import lombok.Getter;
 import lombok.Setter;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -12,9 +14,23 @@ import redis.clients.jedis.JedisPoolConfig;
 @ConfigurationProperties(prefix = "crawler.redis")
 @Getter
 @Setter
+@Slf4j
 public class RedisConfig {
     private String host;
     private int port;
+
+    @PostConstruct
+    public void logConfig() {
+        log.info(">>> RedisConfig: host='{}', port={}", host, port);
+        if (host == null || host.isBlank()) {
+            log.error(">>> Redis host is NULL or empty! Check application-{}.yml",
+                    System.getProperty("spring.profiles.active", "default"));
+        }
+
+        Thread.setDefaultUncaughtExceptionHandler((t, e) ->
+                log.error("❌ Global uncaught exception in thread {}: {}", t.getName(), e.getMessage(), e)
+        );
+    }
 
     @Bean
     public JedisPool jedisPool() {

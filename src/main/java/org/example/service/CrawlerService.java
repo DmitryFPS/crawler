@@ -41,8 +41,8 @@ public class CrawlerService {
         // Очищаем состояние Redis для этого URL, чтобы разрешить повторный краулинг
         try (Jedis jedis = jedisPool.getResource()) {
             // Ключи формата зависят от версии RedisScheduler, обычно:
-            jedis.del("webmagic:redis:cache:" + startUrl);
-            jedis.del("webmagic:redis:queue:" + jobId);
+            jedis.del("webmagic:cache:" + startUrl);
+            jedis.del("webmagic:queue:" + jobId);
         } catch (final Exception e) {
             log.warn("Could not clear Redis state for {}: {}", startUrl, e.getMessage());
         }
@@ -62,21 +62,47 @@ public class CrawlerService {
 
         String seleniumHub = System.getenv("SELENIUM_HUB_URL");
         if (seleniumHub == null || seleniumHub.isBlank()) {
-            seleniumHub = "http://selenium:4444/wd/hub";
+            seleniumHub = "http://localhost:4444/wd/hub";
         }
 
         final Spider spider = Spider.create(processor)
-                .addUrl(request.getUrl())
+                .setScheduler(new RedisScheduler(jedisPool));
+
+        spider.setUUID(jobId);
+        log.info("🔴 [DEBUG] UUID после setUUID: '{}'", spider.getUUID());
+        if (spider.getUUID() == null) {
+            log.error("❌ FAILED to set UUID! This will break RedisScheduler.");
+        }
+
+        spider.addUrl(request.getUrl())
                 .addPipeline(postgresPipeline)
-                .setScheduler(new RedisScheduler(jedisPool))
                 .thread(threads)
                 .setDownloader(new SeleniumDownloader(seleniumHub));
+
+        // 🔴 Проверяем очередь с ПРАВИЛЬНЫМ форматом ключа
+        try (Jedis jedis = jedisPool.getResource()) {
+            String queueKey = "queue_" + jobId;  // ← правильный формат!
+            Long queueSize = jedis.llen(queueKey);
+            log.info("🔴 [REDIS] Queue '{}' size: {}", queueKey, queueSize);
+
+            // Также проверьте ключи с префиксом "queue_" и "set_"
+            var queueKeys = jedis.keys("queue_" + jobId + "*");
+            var setKeys = jedis.keys("set_" + jobId + "*");
+            log.info("🔴 [REDIS] Found queue keys: {}, set keys: {}", queueKeys, setKeys);
+        }
+
+        log.info("Registering PostgresPipeline for job {}", jobId);
 
         final Thread thread = new Thread(spider::start, "crawler-" + jobId);
         thread.setDaemon(false);
 
         spiders.put(jobId, spider);
         spiderThreads.put(jobId, thread);
+
+        thread.setUncaughtExceptionHandler((t, e) ->
+                log.error("❌ Uncaught exception in crawler thread {}: {}", t.getName(), e.getMessage(), e)
+        );
+
         thread.start();
 
         log.info("Started crawler job: {} | url: {} | threads: {}", jobId, request.getUrl(), threads);
