@@ -15,7 +15,6 @@ services:
       retries: 5
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
 
   redis:
     image: redis:7
@@ -44,7 +43,7 @@ services:
       SPRING_DATASOURCE_PASSWORD: postgres
       CRAWLER_REDIS_HOST: redis
       CRAWLER_REDIS_PORT: 6379
-      SPRING_LIQUIBASE_ENABLED: "false"
+      SPRING_LIQUIBASE_ENABLED: "true"
       MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,prometheus,metrics"
       MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "always"
 

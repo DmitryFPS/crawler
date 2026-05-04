@@ -1,16 +1,15 @@
-package org.example;
+package org.example.dto;
 
 import lombok.Getter;
-import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.util.List;
 
 @Getter
 @Setter
-@NoArgsConstructor
 public class CrawlRequest {
     private String url;
-    private int threads;
     private List<String> keywords;
+    private Integer threads;
+    private Integer maxDepth;
 }

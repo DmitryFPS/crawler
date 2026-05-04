@@ -3,26 +3,42 @@ server:
 
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/crawler
+    url: jdbc:postgresql://postgres:5432/crawler
     username: postgres
     password: postgres
     hikari:
       maximum-pool-size: 10
       minimum-idle: 2
+  liquibase:
+    enabled: true
+    change-log: classpath:db/changelog/changelog-master.yaml
+    default-schema: public
+  jpa:
+    open-in-view: false
 
 crawler:
   redis:
-    host: localhost
+    host: redis
     port: 6379
   threads: 5
+  timeout: 10000
+  sleep: 2000
+  max-depth: 3
+  rate-limit:
+    enabled: true
+    requests-per-minute: 30
+  filter:
+    urls-by-keywords: false
   retry:
     max-attempts: 3
     sleep: 3000
-  timeout: 5000
-  sleep: 1000
+    exponential: true
 
 management:
   endpoints:
     web:
       exposure:
-        include: prometheus
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always

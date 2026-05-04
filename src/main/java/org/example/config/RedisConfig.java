@@ -1,4 +1,4 @@
-package org.example;
+package org.example.config;
 
 import lombok.Getter;
 import lombok.Setter;
@@ -22,6 +22,7 @@ public class RedisConfig {
         config.setMaxTotal(50);
         config.setMaxIdle(10);
         config.setMinIdle(2);
+        config.setTestOnBorrow(true);
         return new JedisPool(config, host, port);
     }
 }
