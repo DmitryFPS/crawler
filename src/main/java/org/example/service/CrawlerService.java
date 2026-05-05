@@ -65,16 +65,10 @@ public class CrawlerService {
             seleniumHub = "http://localhost:4444/wd/hub";
         }
 
-        final Spider spider = Spider.create(processor)
-                .setScheduler(new RedisScheduler(jedisPool));
-
-        spider.setUUID(jobId);
-        log.info("[DEBUG] UUID после setUUID: '{}'", spider.getUUID());
-        if (spider.getUUID() == null) {
-            log.error("FAILED to set UUID! This will break RedisScheduler.");
-        }
-
-        spider.addUrl(request.getUrl())
+        final Spider spider = Spider.create(processor);
+        spider.setUUID(jobId);  // Сначала UUID!
+        spider.setScheduler(new RedisScheduler(jedisPool));  // Потом scheduler
+        spider.addUrl(request.getUrl())  // Потом URL
                 .addPipeline(postgresPipeline)
                 .thread(threads)
                 .setDownloader(new SeleniumDownloader(seleniumHub));

@@ -3,6 +3,7 @@ package org.example.dto;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+
 import java.time.Instant;
 
 @Data
@@ -17,4 +18,5 @@ public class SearchResultDto {
     private Instant crawledAt;
     private String domain;
     private String contentText;
+    private String fullContent;
 }

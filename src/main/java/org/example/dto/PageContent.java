@@ -16,4 +16,5 @@ public class PageContent {
     private int keywordMatches;
     private int crawlDepth;
     private String status = "new";
+    private String fullContent;
 }

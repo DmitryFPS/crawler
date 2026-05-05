@@ -12,7 +12,6 @@ import us.codecraft.webmagic.Request;
 import us.codecraft.webmagic.Site;
 import us.codecraft.webmagic.processor.PageProcessor;
 
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -28,8 +27,8 @@ public class CrawlerProcessor implements PageProcessor {
     private final List<String> keywords;
     private final String jobId;
     private final int maxDepth;
-    private final Set<String> visited = new HashSet<>();
 
+    // RedisScheduler автоматически обеспечит дедупликацию через Redis
 
     public CrawlerProcessor(final MetricsService metrics,
                             final CrawlerProperties properties,
@@ -49,64 +48,85 @@ public class CrawlerProcessor implements PageProcessor {
     public void process(final Page page) {
         metrics.getProcessingTimer().record(() -> {
             try {
+                // === 1. Базовая валидация URL ===
                 final String currentUrl = page.getUrl().get();
                 if (currentUrl == null) {
                     page.setSkip(true);
                     return;
                 }
 
-                if (currentUrl.matches(".*\\.(pdf|jpg|png|zip|exe|gif|mp4|mp3|ico|css|js)$")) {
-                    page.setSkip(true);
-                    return;
-                }
-
+                // === 2. Извлекаем контекст краулинга СРАЗУ (до любых return!) ===
                 final String startUrl = page.getRequest().getExtra("startUrl") != null
                         ? page.getRequest().getExtra("startUrl").toString()
                         : currentUrl;
-
                 final int currentDepth = parseDepth(page.getRequest().getExtra("crawlDepth"));
 
-                final String content = page.getHtml().get();
-                if (content == null || content.isEmpty()) {
+                // === 3. Фильтр по расширениям файлов (НЕ блокируем обход ссылок!) ===
+                if (currentUrl.matches(".*\\.(pdf|jpg|png|zip|exe|gif|mp4|mp3|ico|css|js)$")) {
+                    log.debug("⊗ Skipped (file extension): {}", currentUrl);
+                    addFilteredLinks(page, startUrl, currentDepth); // ← продолжаем обход!
                     page.setSkip(true);
                     return;
                 }
 
-                final PageContent pageData = new PageContent();
-                pageData.setUrl(UrlNormalizer.normalize(currentUrl));
-                pageData.setTitle(extractTitle(page));
-                pageData.setH1(extractH1(page));
-                pageData.setDescription(extractDescription(page));
-                pageData.setContentText(extractVisibleText(content));
-                pageData.setDomain(DomainUtils.extractDomain(currentUrl));
-                pageData.setCrawlDepth(currentDepth);
+                // === 4. Проверка контента ===
+                final String rawContent = page.getHtml().get();
+                if (rawContent == null || rawContent.isEmpty()) {
+                    log.debug("⊗ Skipped (empty content): {}", currentUrl);
+                    addFilteredLinks(page, startUrl, currentDepth); // ← продолжаем обход!
+                    page.setSkip(true);
+                    return;
+                }
 
-                // СНАЧАЛА считаем keywordMatches
-                final int matches = countKeywordMatches(pageData.getContentText(), keywords);
-                pageData.setKeywordMatches(matches);
+                // === 5. Извлечение основного контента ===
+                String articleText = extractArticleContent(rawContent);
+                if (articleText.isEmpty()) {
+                    articleText = extractVisibleText(rawContent);
+                }
 
-                double score = rankingService.calculateScore(
-                        pageData.getContentText(),
-                        pageData.getTitle(),
-                        pageData.getH1(),
+                // Если текст слишком короткий — не сохраняем, но ссылки обходим
+                if (articleText.length() < properties.getFilter().getMinContentLength()) {
+                    log.debug("⊗ Skipped (too short): {} | len={}", currentUrl, articleText.length());
+                    addFilteredLinks(page, startUrl, currentDepth); // ← продолжаем обход!
+                    page.setSkip(true);
+                    return;
+                }
+
+                // === 6. Оценка релевантности ===
+                final int matches = countKeywordMatches(articleText, keywords);
+                final double score = rankingService.calculateScore(
+                        articleText,
+                        extractTitle(page),
+                        extractH1(page),
                         keywords
                 );
 
-                pageData.setScore(score);
-                pageData.setStatus("processed");
+                // === 7. Сохранение в БД ТОЛЬКО при наличии релевантности ===
+                final boolean hasKeywords = matches > 0 || score >= 0.1;
+                if (hasKeywords) {
+                    final PageContent pageData = new PageContent();
+                    pageData.setUrl(UrlNormalizer.normalize(currentUrl));
+                    pageData.setTitle(extractTitle(page));
+                    pageData.setH1(extractH1(page));
+                    pageData.setDescription(extractDescription(page));
+                    pageData.setContentText(extractKeywordSnippet(articleText, keywords, 150));
+                    pageData.setFullContent(articleText.length() > 20000 ? articleText.substring(0, 20000) : articleText);
+                    pageData.setDomain(DomainUtils.extractDomain(currentUrl));
+                    pageData.setCrawlDepth(currentDepth);
+                    pageData.setKeywordMatches(matches);
+                    pageData.setScore(score);
+                    pageData.setStatus("processed");
 
-                // НЕ БЛОКИРУЕМ страницы — просто помечаем
-                if (score < 0.1 && matches == 0 && !currentUrl.equals(startUrl)) {
-                    metrics.pageSkippedByKeyword();
-                    log.debug("Low relevance: {}", currentUrl);
-                } else {
                     page.putField("pageContent", pageData);
+                    metrics.pageProcessed();
+                    log.info("✓ Saved: {} | matches={} score={}", currentUrl, matches, score);
+                } else {
+                    log.debug("⊗ Skipped (no keywords): {} | matches={} score={}", currentUrl, matches, score);
+                    metrics.pageSkippedByKeyword();
                 }
 
-                // ВСЕГДА идём дальше по сайту
+                // === 8. ОБХОД ССЫЛОК — ВСЕГДА, если не достигнута глубина ===
                 addFilteredLinks(page, startUrl, currentDepth);
-
-                metrics.pageProcessed();
 
             } catch (final Exception e) {
                 log.error("Error processing page: {}", page.getUrl(), e);
@@ -116,40 +136,41 @@ public class CrawlerProcessor implements PageProcessor {
         });
     }
 
+    /**
+     * Добавляет отфильтрованные ссылки в очередь.
+     * дедупликацию делает RedisScheduler!
+     */
     private void addFilteredLinks(final Page page,
                                   final String startUrl,
                                   final int currentDepth) {
-
         if (currentDepth >= maxDepth) {
             return;
         }
 
         final List<String> links = page.getHtml().links().all();
+        int addedCount = 0;
 
         for (String link : links) {
             String normalized = UrlNormalizer.normalize(link);
-
             if (normalized == null) continue;
 
-            // мусор
+            // 1. Фильтр бинарных/мусорных расширений
             if (normalized.matches(".*\\.(pdf|jpg|png|zip|exe|gif|mp4|mp3|ico|css|js)$")) {
                 continue;
             }
+
+            // 2. Убираем якоря
             if (normalized.contains("#")) {
                 continue;
             }
 
-            // домен
+            // 3. Ограничение по домену
             if (!DomainUtils.isSameDomain(startUrl, normalized)) {
                 continue;
             }
 
-            // дубликаты
-            if (visited.contains(normalized)) {
-                continue;
-            }
-
-            visited.add(normalized);
+            // RedisScheduler автоматически проверит дубликаты через ключ set:<jobId>:url
+            // Если ссылка уже была — она молча отбросится, не нужно visited.contains()!
 
             final Request newRequest = new Request(normalized);
             newRequest.putExtra("startUrl", startUrl);
@@ -157,6 +178,13 @@ public class CrawlerProcessor implements PageProcessor {
             newRequest.putExtra("jobId", jobId);
 
             page.addTargetRequest(newRequest);
+            addedCount++;
+
+            log.debug("➕ Added to queue: {} (depth: {})", normalized, currentDepth + 1);
+        }
+
+        if (addedCount > 0) {
+            log.debug("📦 Added {} links from {} (depth: {})", addedCount, startUrl, currentDepth);
         }
     }
 
@@ -171,18 +199,17 @@ public class CrawlerProcessor implements PageProcessor {
 
             // Экранируем спецсимволы и добавляем границы слова
             final String kw = Pattern.quote(keyword.toLowerCase(Locale.ROOT));
-
             final Pattern pattern = Pattern.compile("\\b" + kw + "\\b",
                     Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
             final Matcher matcher = pattern.matcher(lower);
             while (matcher.find()) totalMatches++;
+        }
 
-            // ОТЛАДОЧНЫЙ ЛОГ — критически важен!
-            if (totalMatches > 0) {
-                log.info(">>> Keyword matches found: keyword='{}', count={}, contentPreview='{}'",
-                        keywords, totalMatches,
-                        lower.substring(0, Math.min(200, lower.length())).replaceAll("\\s+", " "));
-            }
+        // ОТЛАДОЧНЫЙ ЛОГ — только если есть совпадения
+        if (totalMatches > 0) {
+            log.info(">>> Keyword matches: keywords={}, count={}, preview='{}'",
+                    keywords, totalMatches,
+                    lower.substring(0, Math.min(200, lower.length())).replaceAll("\\s+", " "));
         }
 
         return totalMatches;
@@ -247,8 +274,72 @@ public class CrawlerProcessor implements PageProcessor {
         // 7. Чистим пробелы
         text = text.replaceAll("\\s+", " ").trim();
 
-        // 8. Обрезаем, если слишком длинный
-        return text.length() > 5000 ? text.substring(0, 5000) : text;
+        // Возвращаем только если текст достаточно длинный
+        return text.length() < 150 ? "" : (text.length() > 5000 ? text.substring(0, 5000) : text);
+    }
+
+    /**
+     * Извлекает только основной контент статьи, удаляя навигацию, рекламу, футеры.
+     */
+    private String extractArticleContent(final String html) {
+        if (html == null || html.isBlank()) return "";
+
+        String content = html;
+
+        // 1. Удаляем явно ненужные блоки
+        content = content.replaceAll("(?is)<(script|style|nav|footer|header|aside|form|noscript)[^>]*>.*?</\\1>", " ");
+        content = content.replaceAll("(?is)<[^>]+(class|id)[^>]*=(\"|')[^\"']*(advertisement|banner|sidebar|cookie|popup|widget|social)[^\"']*\\2[^>]*>.*?</[^>]+>", " ");
+
+        // 2. Пробуем вытащить <article> или <main> — приоритетный контент
+        Pattern articlePattern = Pattern.compile("(?is)<(article|main)[^>]*>(.*?)</\\1>", Pattern.DOTALL);
+        Matcher matcher = articlePattern.matcher(content);
+        if (matcher.find()) {
+            content = matcher.group(2);
+        } else {
+            // Если нет article/main — берём <div class="content"> или аналогичный
+            Pattern contentPattern = Pattern.compile("(?is)<div[^>]*class=\"[^\"]*(content|post|article|entry)[^\"]*\"[^>]*>(.*?)</div>", Pattern.DOTALL);
+            Matcher contentMatcher = contentPattern.matcher(content);
+            if (contentMatcher.find()) {
+                content = contentMatcher.group(2);
+            }
+        }
+
+        // 3. Удаляем все оставшиеся теги
+        content = content.replaceAll("<[^>]+>", " ");
+
+        // 4. Декодируем HTML-сущности
+        content = content.replaceAll("&nbsp;", " ")
+                .replaceAll("&amp;", "&")
+                .replaceAll("&lt;", "<")
+                .replaceAll("&gt;", ">")
+                .replaceAll("&quot;", "\"")
+                .replaceAll("&#\\d+;", " ")
+                .replaceAll("&#[xX][0-9a-fA-F]+;", " ");
+
+        // 5. Чистим пробелы и обрезаем
+        content = content.replaceAll("\\s+", " ").trim();
+
+        // 6. Возвращаем только если достаточно длинный
+        return content.length() < properties.getFilter().getMinContentLength() ? "" : content;
+    }
+
+    /**
+     * Возвращает сниппет текста вокруг первого вхождения ключевого слова.
+     */
+    private String extractKeywordSnippet(String content, List<String> keywords, int contextChars) {
+        if (content == null || keywords == null) return "";
+        String lower = content.toLowerCase(Locale.ROOT);
+        for (String kw : keywords) {
+            if (kw == null || kw.isBlank()) continue;
+            int pos = lower.indexOf(kw.toLowerCase());
+            if (pos != -1) {
+                int start = Math.max(0, pos - contextChars);
+                int end = Math.min(content.length(), pos + kw.length() + contextChars);
+                String snippet = content.substring(start, end).replaceAll("\\s+", " ").trim();
+                return (start > 0 ? "…" : "") + snippet + (end < content.length() ? "…" : "");
+            }
+        }
+        return content.length() > 300 ? content.substring(0, 300) + "…" : content;
     }
 
     @Override

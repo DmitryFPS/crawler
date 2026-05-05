@@ -47,14 +47,15 @@ public class PostgresPipeline implements Pipeline {
 
         try (Connection conn = dataSource.getConnection();
              final PreparedStatement stmt = conn.prepareStatement("""
-                     INSERT INTO pages(url, title, h1, description, content_text, 
+                     INSERT INTO pages(url, title, h1, description, content_text, full_content,
                                       score, keyword_matches, domain, crawl_depth, status, crawled_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      ON CONFLICT (url) DO UPDATE SET
                          title = EXCLUDED.title,
                          h1 = EXCLUDED.h1,
                          description = EXCLUDED.description,
                          content_text = EXCLUDED.content_text,
+                         full_content = EXCLUDED.full_content,
                          score = EXCLUDED.score,
                          keyword_matches = EXCLUDED.keyword_matches,
                          domain = EXCLUDED.domain,
@@ -63,17 +64,19 @@ public class PostgresPipeline implements Pipeline {
                          updated_at = CURRENT_TIMESTAMP
                      """)) {
 
+            // === Устанавливаем параметры (индексы 1-12) ===
             stmt.setString(1, data.getUrl());
             stmt.setString(2, data.getTitle());
             stmt.setString(3, data.getH1());
             stmt.setString(4, data.getDescription());
             stmt.setString(5, data.getContentText());
-            stmt.setDouble(6, data.getScore());
-            stmt.setInt(7, data.getKeywordMatches());
-            stmt.setString(8, data.getDomain());
-            stmt.setInt(9, data.getCrawlDepth());
-            stmt.setString(10, data.getStatus());
-            stmt.setTimestamp(11, Timestamp.from(Instant.now()));
+            stmt.setString(6, data.getFullContent());  // 6-й параметр
+            stmt.setDouble(7, data.getScore());         // ← стало 7
+            stmt.setInt(8, data.getKeywordMatches());   // ← сдвинуто
+            stmt.setString(9, data.getDomain());        // ← сдвинуто
+            stmt.setInt(10, data.getCrawlDepth());      // ← сдвинуто
+            stmt.setString(11, data.getStatus());       // ← сдвинуто
+            stmt.setTimestamp(12, Timestamp.from(Instant.now())); // ← сдвинуто
 
             stmt.executeUpdate();
             log.info("✓ Saved page: {} (score: {}, matches: {})",

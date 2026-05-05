@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS pages (
                                      score DOUBLE PRECISION DEFAULT 0,
                                      keyword_matches INTEGER DEFAULT 0,
                                      crawled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                     full_content TEXT
 );
 
 -- Базовые индексы

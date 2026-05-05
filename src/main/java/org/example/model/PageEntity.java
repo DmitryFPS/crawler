@@ -36,6 +36,9 @@ public class PageEntity {
     @Column(columnDefinition = "TEXT")
     private String contentText;
 
+    @Column(columnDefinition = "TEXT")
+    private String fullContent;
+
     // Это поле заполняется триггером PostgreSQL, JPA его не пишет
     @Column(columnDefinition = "tsvector", insertable = false, updatable = false)
     private String searchVector;

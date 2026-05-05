@@ -35,5 +35,6 @@ public class CrawlerProperties {
     @Setter
     public static class Filter {
         private boolean urlsByKeywords = false;
+        private int minContentLength = 200;
     }
 }
