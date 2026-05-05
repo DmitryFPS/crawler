@@ -18,15 +18,24 @@ spring:
       ddl-auto: update
 
 crawler:
+  anti-bot:
+    random-delay:
+      min: 1000
+      max: 4000
+    user-agent-rotation: true
+    fingerprint-randomization: true
   redis:
     host: localhost
     port: 6379
     timeout: 5000
   selenium:
     hub:
-      url: http://localhost:4444/wd/hub
+      url: ${SELENIUM_HUB_URL:http://localhost:4444/wd/hub}
     chrome:
       options: "--window-size=1920,1080 --headless=new --disable-gpu --no-sandbox"
+    proxy:
+      enabled: false
+      list: ""
   # КРИТИЧЕСКИ ВАЖНЫЕ настройки фильтрации
   filter:
     urls-by-keywords: false
@@ -47,7 +56,7 @@ crawler:
   threads: 3                           # ← Должно совпадать с SE_NODE_MAX_SESSIONS!
   timeout: 30000                       # ← 30 сек на загрузку страницы
   sleep: 500                           # ← Базовая задержка между запросами
-  max-depth: 10                        # ← уровни глубины
+  max-depth: 3                         # ← уровни глубины
   max-pages-per-job: 2000              # ← лимит на количество обработанных страниц за один запуск краулера
 
 management:

@@ -1,6 +1,3 @@
-# docker-compose.dev.yml
-# Инфраструктура для локальной разработки (без приложения)
-
 services:
   postgres:
     image: postgres:15

@@ -1,8 +1,31 @@
 global:
-  scrape_interval: 15s
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  scrape_timeout: 10s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: [ ]
+
+rule_files:
+  - "alerts.yml"  # ← Опционально: правила для алертов
 
 scrape_configs:
   - job_name: 'crawler-app'
     metrics_path: '/actuator/prometheus'
+    scrape_interval: 30s
     static_configs:
       - targets: [ 'app:8080' ]
+        labels:
+          environment: 'dev'
+          service: 'crawler'
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: [ 'localhost:9090' ]
+
+  # ← Опционально: мониторинг инфраструктуры
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: [ 'host.docker.internal:9100' ]  # ← Хост-метрики

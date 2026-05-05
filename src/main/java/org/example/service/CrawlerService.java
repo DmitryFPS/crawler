@@ -15,6 +15,7 @@ import redis.clients.jedis.JedisPool;
 import us.codecraft.webmagic.Spider;
 import us.codecraft.webmagic.scheduler.RedisScheduler;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -38,22 +39,17 @@ public class CrawlerService {
         final String jobId = UUID.randomUUID().toString();
         final String startUrl = UrlNormalizer.normalize(request.getUrl());
 
-        // Надёжная очистка состояния Redis
+        // === Очистка Redis ===
         try (Jedis jedis = jedisPool.getResource()) {
-            // WebMagic RedisScheduler использует ключи формата:
-            // queue_<uuid>, set_<uuid>:url, item_<uuid>:<url>
             jedis.del("queue_" + jobId);
             jedis.del("set_" + jobId + ":url");
-
-            // Также очищаем по старому формату (на всякий случай)
             jedis.del("webmagic:cache:" + startUrl);
-            jedis.del("webmagic:queue:" + jobId);
-
             log.info("[REDIS] Cleared state for job: {}", jobId);
         } catch (final Exception e) {
             log.warn("Could not clear Redis state for {}: {}", jobId, e.getMessage());
         }
 
+        // === Создаём процессор ===
         final CrawlerProcessor processor = new CrawlerProcessor(
                 metricsService,
                 properties,
@@ -61,24 +57,36 @@ public class CrawlerService {
                 request.getKeywords(),
                 jobId,
                 request.getMaxDepth() != null ? request.getMaxDepth() : properties.getMaxDepth(),
-                properties.getMaxPagesPerJob(),
-                jedisPool
+                properties.getMaxPagesPerJob()
         );
 
+        // === Параметры потоков ===
         final int threads = request.getThreads() != null && request.getThreads() > 0
                 ? request.getThreads()
                 : properties.getThreads();
 
+        // === Selenium Hub ===
         String seleniumHub = System.getenv("SELENIUM_HUB_URL");
         if (seleniumHub == null || seleniumHub.isBlank()) {
             seleniumHub = "http://localhost:4444/wd/hub";
         }
 
-        final Spider spider = Spider.create(processor);
-        spider.setUUID(jobId);  // Сначала UUID!
-        spider.setScheduler(new RedisScheduler(jedisPool));  // Потом scheduler
+        // === Прокси-лист (если включено) ===
+        final List<String> proxyList = parseProxyList(properties.getSelenium().getProxy().getList());
 
-        // Поддержка как одиночного url, так и списка seedUrls
+        // === ИСПРАВЛЕНИЕ: передаём все параметры в SeleniumDownloader ===
+        final SeleniumDownloader downloader = new SeleniumDownloader(
+                seleniumHub,
+                properties.getAntiBot(),      // ← AntiBot config
+                proxyList                      // ← Proxy list
+        );
+
+        // === Создаём Spider ===
+        final Spider spider = Spider.create(processor);
+        spider.setUUID(jobId);
+        spider.setScheduler(new RedisScheduler(jedisPool));
+
+        // === Seed URLs ===
         if (request.getSeedUrls() != null && !request.getSeedUrls().isEmpty()) {
             for (String seedUrl : request.getSeedUrls()) {
                 spider.addUrl(UrlNormalizer.normalize(seedUrl));
@@ -88,24 +96,21 @@ public class CrawlerService {
             spider.addUrl(UrlNormalizer.normalize(request.getUrl()));
         }
 
+        // === использую созданный downloader ===
         spider.addPipeline(postgresPipeline)
                 .thread(threads)
-                .setDownloader(new SeleniumDownloader(seleniumHub));
+                .setDownloader(downloader);
 
-        // Проверяем очередь с ПРАВИЛЬНЫМ форматом ключа
+        // === Логирование очереди ===
         try (Jedis jedis = jedisPool.getResource()) {
-            String queueKey = "queue_" + jobId;  // ← правильный формат!
-            Long queueSize = jedis.llen(queueKey);
+            final String queueKey = "queue_" + jobId;
+            final Long queueSize = jedis.llen(queueKey);
             log.info("[REDIS] Queue '{}' size: {}", queueKey, queueSize);
-
-            // Также проверьте ключи с префиксом "queue_" и "set_"
-            var queueKeys = jedis.keys("queue_" + jobId + "*");
-            var setKeys = jedis.keys("set_" + jobId + "*");
-            log.info("[REDIS] Found queue keys: {}, set keys: {}", queueKeys, setKeys);
         }
 
         log.info("Registering PostgresPipeline for job {}", jobId);
 
+        // === Запуск в отдельном потоке ===
         final Thread thread = new Thread(spider::start, "crawler-" + jobId);
         thread.setDaemon(false);
 
@@ -118,13 +123,22 @@ public class CrawlerService {
 
         thread.start();
 
-        // Логирование перед стартом
         log.info("Starting crawler job: {} | url: {} | keywords: {} | depth: {} | threads: {}",
                 jobId, startUrl, request.getKeywords(),
                 request.getMaxDepth() != null ? request.getMaxDepth() : properties.getMaxDepth(),
                 threads);
 
         return jobId;
+    }
+
+    /**
+     * Парсит строку прокси в список: "http://p1:8080,http://p2:8080" → List
+     */
+    private List<String> parseProxyList(final String proxyListStr) {
+        if (proxyListStr == null || proxyListStr.isBlank()) {
+            return List.of();
+        }
+        return List.of(proxyListStr.split("\\s*,\\s*"));
     }
 
     public void stop(final String jobId) {
