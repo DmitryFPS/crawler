@@ -40,7 +40,7 @@ crawler:
   filter:
     urls-by-keywords: false
     allow-cross-domain: false          # ← ЗАПРЕТ перехода на другие домены!
-    min-content-length: 200
+    min-content-length: 400
     allowed-domains: [ ]                # ← пусто = только стартовый домен
     blocked-domains: [ ]                # ← можно добавить: [google.com, facebook.com]
   # Настройки повторных попыток

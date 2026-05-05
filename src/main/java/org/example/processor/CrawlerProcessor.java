@@ -18,6 +18,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Slf4j
@@ -55,6 +56,9 @@ public class CrawlerProcessor implements PageProcessor {
     // Кэш для предотвращения повторной обработки навигации в рамках одного job
     private final ConcurrentHashMap<String, Boolean> processedNavUrls = new ConcurrentHashMap<>();
 
+    // Минимальная длина контента для статьи (отсекает меню/погоду)
+    private static final int MIN_ARTICLE_LENGTH = 400;
+
     public CrawlerProcessor(final MetricsService metrics,
                             final CrawlerProperties properties,
                             final RankingService rankingService,
@@ -78,7 +82,7 @@ public class CrawlerProcessor implements PageProcessor {
                 // === Глобальный лимит страниц ===
                 int currentCrawled = processedCount.incrementAndGet();
                 if (maxPagesPerJob > 0 && currentCrawled > maxPagesPerJob) {
-                    log.info("Page limit reached ({}/{}), stopping job {}", currentCrawled, maxPagesPerJob, jobId);
+                    log.info("🛑 Page limit reached ({}/{}), stopping job {}", currentCrawled, maxPagesPerJob, jobId);
                     shouldStop.set(true);
                     page.setSkip(true);
                     return;
@@ -110,41 +114,76 @@ public class CrawlerProcessor implements PageProcessor {
                 }
 
                 // === Извлечение текста ===
-                String articleText = extractArticleContent(rawContent);
-                if (articleText.isEmpty()) {
-                    articleText = extractVisibleText(rawContent);
+                String mainContent = extractArticleContent(rawContent);
+                if (mainContent.isEmpty()) {
+                    mainContent = extractVisibleText(rawContent);
                 }
 
-                if (articleText.length() < properties.getFilter().getMinContentLength()) {
-                    addFilteredLinks(page, startUrl, currentDepth);
-                    page.setSkip(true);
-                    return;
+                // === 🔥 КОНТЕКСТНАЯ ПРОВЕРКА КЛЮЧЕВЫХ СЛОВ ===
+                final String title = extractTitle(page);
+                final String h1 = extractH1(page);
+
+                // Считаем вхождения в ЗАГОЛОВКАХ (высокий приоритет)
+                final int headerMatches = countKeywordMatches(title + " " + h1, keywords);
+
+                // Считаем вхождения в ОСНОВНОМ контенте (не навигация!)
+                final int contentMatches = countKeywordMatches(mainContent, keywords);
+
+                // Считаем вхождения во всём тексте (для сравнения/отладки)
+                final int allTextMatches = countKeywordMatches(rawContent, keywords);
+
+                // === 🔥 ЛОГИКА СОХРАНЕНИЯ: только если ключи в реальном контенте ===
+                final boolean hasHeaderKeywords = headerMatches > 0;
+                final boolean hasContentKeywords = contentMatches > 0;
+                final boolean isLongEnough = mainContent.length() >= MIN_ARTICLE_LENGTH;
+
+                // Рассчитываем score только если есть потенциальная релевантность
+                double score = 0;
+                if (hasHeaderKeywords || (hasContentKeywords && isLongEnough)) {
+                    score = rankingService.calculateScore(mainContent, title, h1, keywords);
                 }
 
-                // === Оценка релевантности ===
-                final int matches = countKeywordMatches(articleText, keywords);
-                final double score = rankingService.calculateScore(
-                        articleText, extractTitle(page), extractH1(page), keywords);
+                // Сохраняем ТОЛЬКО если:
+                // 1. Ключи в заголовке И контент достаточно длинный
+                // ИЛИ
+                // 2. Ключи в основном контенте И контент длинный И score выше порога
+                final boolean shouldSave = (hasHeaderKeywords && isLongEnough) ||
+                        (hasContentKeywords && isLongEnough && score >= 0.15);
 
-                // === Сохранение в БД ===
-                if (matches > 0 || score >= 0.1) {
+                if (shouldSave) {
                     final PageContent pageData = new PageContent();
                     pageData.setUrl(UrlNormalizer.normalize(currentUrl));
-                    pageData.setTitle(extractTitle(page));
-                    pageData.setH1(extractH1(page));
+                    pageData.setTitle(title);
+                    pageData.setH1(h1);
                     pageData.setDescription(extractDescription(page));
-                    pageData.setContentText(extractKeywordSnippet(articleText, keywords, 150));
-                    pageData.setFullContent(articleText.length() > 20000 ? articleText.substring(0, 20000) : articleText);
+                    pageData.setContentText(extractKeywordSnippet(mainContent, keywords, 150));
+                    pageData.setFullContent(mainContent.length() > 20000 ? mainContent.substring(0, 20000) : mainContent);
                     pageData.setDomain(DomainUtils.extractDomain(currentUrl));
                     pageData.setCrawlDepth(currentDepth);
-                    pageData.setKeywordMatches(matches);
+                    pageData.setKeywordMatches(contentMatches); // показываем матчи в контенте, не в навигации
                     pageData.setScore(score);
                     pageData.setStatus("processed");
 
                     page.putField("pageContent", pageData);
                     metrics.pageProcessed();
-                    log.info("✓ Saved: {} | depth={} matches={} score={}", currentUrl, currentDepth, matches, score);
+
+                    log.info("✓ Saved: {} | depth={} header_matches={} content_matches={} score={}",
+                            currentUrl, currentDepth, headerMatches, contentMatches, score);
                 } else {
+                    // 🔥 Логируем, почему страница была отклонена (для отладки)
+                    if (allTextMatches > 0 && contentMatches == 0) {
+                        log.debug("⊗ Skipped (keywords only in navigation): {} | all={} content={} header={}",
+                                currentUrl, allTextMatches, contentMatches, headerMatches);
+                    } else if (!isLongEnough) {
+                        log.debug("⊗ Skipped (too short for article): {} | len={} content_matches={}",
+                                currentUrl, mainContent.length(), contentMatches);
+                    } else if (headerMatches == 0 && contentMatches > 0 && score < 0.15) {
+                        log.debug("⊗ Skipped (low relevance score): {} | score={} content_matches={}",
+                                currentUrl, score, contentMatches);
+                    } else {
+                        log.debug("⊗ Skipped (no relevant keywords): {} | header={} content={}",
+                                currentUrl, headerMatches, contentMatches);
+                    }
                     metrics.pageSkippedByKeyword();
                 }
 
@@ -244,16 +283,17 @@ public class CrawlerProcessor implements PageProcessor {
         page.addTargetRequest(req);
     }
 
-    // === Вспомогательные методы (без изменений, см. предыдущие версии) ===
-    private int countKeywordMatches(final String content, final List<String> keywords) { /* ... */
-        if (content == null || keywords == null) return 0;
+    // === Вспомогательные методы ===
+
+    private int countKeywordMatches(final String content, final List<String> keywords) {
+        if (content == null || keywords == null || content.isBlank()) return 0;
         final String lower = content.toLowerCase(Locale.forLanguageTag("ru"));
         int total = 0;
         for (String kw : keywords) {
             if (kw == null || kw.isBlank()) continue;
             final Pattern p = Pattern.compile("\\b" + Pattern.quote(kw.toLowerCase(Locale.forLanguageTag("ru"))) + "\\b",
                     Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CHARACTER_CLASS);
-            final var m = p.matcher(lower);
+            final Matcher m = p.matcher(lower);
             while (m.find()) total++;
         }
         return total;
@@ -288,29 +328,43 @@ public class CrawlerProcessor implements PageProcessor {
         return d != null ? d.trim() : "";
     }
 
-    private String extractVisibleText(final String html) { /* ... упрощённая версия ... */
+    private String extractVisibleText(final String html) {
         if (html == null) return "";
         String t = html.replaceAll("(?is)<(script|style|noscript|svg|iframe)[^>]*>.*?</\\1>", " ")
-                .replaceAll("<[^>]+>", " ").replaceAll("&[a-z]+;|&#\\d+;|&#[xX][0-9a-f]+;", " ")
+                .replaceAll("<[^>]+>", " ")
+                .replaceAll("&[a-z]+;|&#\\d+;|&#[xX][0-9a-f]+;", " ")
                 .replaceAll("\\s+", " ").trim();
         return t.length() < 150 ? "" : (t.length() > 5000 ? t.substring(0, 5000) : t);
     }
 
-    private String extractArticleContent(final String html) { /* ... аналогично extractVisibleText, но с приоритетом <article>/<main> ... */
+    private String extractArticleContent(final String html) {
         if (html == null || html.isBlank()) return "";
-        String c = html.replaceAll("(?is)<(script|style|nav|footer|header|aside|form)[^>]*>.*?</\\1>", " ");
-        for (String sel : new String[]{
+        String c = html;
+
+        // 🔥 Агрессивно удаляем навигацию ДО выборки <article>/<main>
+        c = c.replaceAll("(?is)<(nav|header|footer|aside|menu|sidebar)[^>]*>.*?</\\1>", " ");
+        c = c.replaceAll("(?is)<div[^>]*class=\"[^\"]*(nav|menu|sidebar|widget|banner|ads|promo)[^\"]*\"[^>]*>.*?</div>", " ");
+        c = c.replaceAll("(?is)<ul[^>]*class=\"[^\"]*(menu|nav|breadcrumbs)[^\"]*\"[^>]*>.*?</ul>", " ");
+
+        // Приоритетные теги для контента
+        String[] selectors = {
                 "(?is)<(article|main)[^>]*>(.*?)</\\1>",
-                "(?is)<div[^>]*class=\"[^\"]*(content|post|article)[^\"]*\"[^>]*>(.*?)</div>"
-        }) {
-            var m = Pattern.compile(sel, Pattern.DOTALL).matcher(c);
+                "(?is)<div[^>]*class=\"[^\"]*(content|post|article|entry|news|story)[^\"]*\"[^>]*>(.*?)</div>",
+                "(?is)<section[^>]*class=\"[^\"]*(content|post|article|entry)[^\"]*\"[^>]*>(.*?)</section>"
+        };
+        for (String sel : selectors) {
+            Matcher m = Pattern.compile(sel, Pattern.DOTALL).matcher(c);
             if (m.find()) {
                 c = m.groupCount() >= 2 ? m.group(2) : m.group(1);
                 break;
             }
         }
-        c = c.replaceAll("<[^>]+>", " ").replaceAll("&[a-z]+;|&#\\d+;|&#[xX][0-9a-f]+;", " ")
-                .replaceAll("\\s+", " ").trim();
+
+        // Финальная очистка
+        c = c.replaceAll("<[^>]+>", " ")
+                .replaceAll("&[a-z]+;|&#\\d+;|&#[xX][0-9a-f]+;", " ")
+                .replaceAll("[\\s\\u00A0]+", " ").trim();
+
         return c.length() < properties.getFilter().getMinContentLength() ? "" :
                 (c.length() > 50000 ? c.substring(0, 50000) : c);
     }
@@ -319,7 +373,7 @@ public class CrawlerProcessor implements PageProcessor {
         if (content == null || keywords == null) return "";
         for (String kw : keywords) {
             if (kw == null || kw.isBlank()) continue;
-            var m = Pattern.compile("\\b" + Pattern.quote(kw) + "\\b", Pattern.CASE_INSENSITIVE).matcher(content);
+            Matcher m = Pattern.compile("\\b" + Pattern.quote(kw) + "\\b", Pattern.CASE_INSENSITIVE).matcher(content);
             if (m.find()) {
                 int s = Math.max(0, m.start() - ctx), e = Math.min(content.length(), m.end() + ctx);
                 return (s > 0 ? "…" : "") + content.substring(s, e).replaceAll("\\s+", " ").trim() + (e < content.length() ? "…" : "");
