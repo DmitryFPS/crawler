@@ -9,6 +9,7 @@ import java.util.List;
 @Setter
 public class CrawlRequest {
     private String url;
+    private List<String> seedUrls;
     private List<String> keywords;
     private Integer threads;
     private Integer maxDepth;

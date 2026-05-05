@@ -38,13 +38,20 @@ public class CrawlerService {
         final String jobId = UUID.randomUUID().toString();
         final String startUrl = UrlNormalizer.normalize(request.getUrl());
 
-        // Очищаем состояние Redis для этого URL, чтобы разрешить повторный краулинг
+        // Надёжная очистка состояния Redis
         try (Jedis jedis = jedisPool.getResource()) {
-            // Ключи формата зависят от версии RedisScheduler, обычно:
+            // WebMagic RedisScheduler использует ключи формата:
+            // queue_<uuid>, set_<uuid>:url, item_<uuid>:<url>
+            jedis.del("queue_" + jobId);
+            jedis.del("set_" + jobId + ":url");
+
+            // Также очищаем по старому формату (на всякий случай)
             jedis.del("webmagic:cache:" + startUrl);
             jedis.del("webmagic:queue:" + jobId);
+
+            log.info("[REDIS] Cleared state for job: {}", jobId);
         } catch (final Exception e) {
-            log.warn("Could not clear Redis state for {}: {}", startUrl, e.getMessage());
+            log.warn("Could not clear Redis state for {}: {}", jobId, e.getMessage());
         }
 
         final CrawlerProcessor processor = new CrawlerProcessor(
@@ -53,7 +60,8 @@ public class CrawlerService {
                 rankingService,
                 request.getKeywords(),
                 jobId,
-                request.getMaxDepth() != null ? request.getMaxDepth() : properties.getMaxDepth()
+                request.getMaxDepth() != null ? request.getMaxDepth() : properties.getMaxDepth(),
+                properties.getMaxPagesPerJob()
         );
 
         final int threads = request.getThreads() != null && request.getThreads() > 0
@@ -68,8 +76,18 @@ public class CrawlerService {
         final Spider spider = Spider.create(processor);
         spider.setUUID(jobId);  // Сначала UUID!
         spider.setScheduler(new RedisScheduler(jedisPool));  // Потом scheduler
-        spider.addUrl(request.getUrl())  // Потом URL
-                .addPipeline(postgresPipeline)
+
+        // Поддержка как одиночного url, так и списка seedUrls
+        if (request.getSeedUrls() != null && !request.getSeedUrls().isEmpty()) {
+            for (String seedUrl : request.getSeedUrls()) {
+                spider.addUrl(UrlNormalizer.normalize(seedUrl));
+                log.debug("Added seed URL: {}", seedUrl);
+            }
+        } else if (request.getUrl() != null) {
+            spider.addUrl(UrlNormalizer.normalize(request.getUrl()));
+        }
+
+        spider.addPipeline(postgresPipeline)
                 .thread(threads)
                 .setDownloader(new SeleniumDownloader(seleniumHub));
 
@@ -99,7 +117,12 @@ public class CrawlerService {
 
         thread.start();
 
-        log.info("Started crawler job: {} | url: {} | threads: {}", jobId, request.getUrl(), threads);
+        // Логирование перед стартом
+        log.info("Starting crawler job: {} | url: {} | keywords: {} | depth: {} | threads: {}",
+                jobId, startUrl, request.getKeywords(),
+                request.getMaxDepth() != null ? request.getMaxDepth() : properties.getMaxDepth(),
+                threads);
+
         return jobId;
     }
 

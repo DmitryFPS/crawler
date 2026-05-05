@@ -10,7 +10,7 @@ spring:
     hikari:
       maximum-pool-size: 10
   liquibase:
-    enabled: false  # ← Отключить, пока нет миграций
+    enabled: false
     change-log: classpath:db/changelog/db.changelog-master.xml
   jpa:
     show-sql: true
@@ -22,12 +22,28 @@ crawler:
     host: localhost
     port: 6379
     timeout: 5000
-
-selenium:
-  hub:
-    url: http://localhost:4444/wd/hub
-  chrome:
-    options: "--window-size=1920,1080 --headless=new"
+  selenium:
+    hub:
+      url: http://localhost:4444/wd/hub
+    chrome:
+      options: "--window-size=1920,1080 --headless=new --disable-gpu --no-sandbox"
+  # Гибкие настройки фильтрации
+  filter:
+    urls-by-keywords: false
+    allow-cross-domain: true
+    min-content-length: 200
+    allowed-domains: [ ]
+  # Настройки повторных попыток и задержек
+  retry:
+    max-attempts: 3
+    sleep: 3000
+    exponential: true
+  rate-limit:
+    enabled: true
+    requests-per-minute: 20  # Снижено для обхода анти-бота
+  threads: 5  # Меньше потоков = меньше шансов получить бан
+  max-depth: 10
+  max-pages-per-job: 1000  # Ограничение, чтобы не улететь в бесконечный краулинг
 
 management:
   endpoints:
@@ -42,13 +58,15 @@ management:
       prometheus:
         enabled: true
 
-# Логирование для отладки
+# Детальное логирование для отладки
 logging:
   level:
     root: INFO
     org.springframework.web: DEBUG
-    org.seleniumhq.selenium: DEBUG
+    org.seleniumhq.selenium: WARN
     org.example: DEBUG
-    org.example.pipeline: DEBUG
     org.example.processor: DEBUG
     org.example.downloader: DEBUG
+    org.example.pipeline: DEBUG
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

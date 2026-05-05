@@ -15,6 +15,7 @@ import us.codecraft.webmagic.processor.PageProcessor;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -27,27 +28,40 @@ public class CrawlerProcessor implements PageProcessor {
     private final List<String> keywords;
     private final String jobId;
     private final int maxDepth;
+    private final int maxPagesPerJob;
 
-    // RedisScheduler автоматически обеспечит дедупликацию через Redis
+    private final AtomicInteger processedCount = new AtomicInteger(0);
 
     public CrawlerProcessor(final MetricsService metrics,
                             final CrawlerProperties properties,
                             final RankingService rankingService,
                             final List<String> keywords,
                             final String jobId,
-                            final int maxDepth) {
+                            final int maxDepth,
+                            final int maxPagesPerJob) {
         this.metrics = metrics;
         this.properties = properties;
         this.rankingService = rankingService;
         this.keywords = keywords;
         this.jobId = jobId;
         this.maxDepth = maxDepth;
+        this.maxPagesPerJob = maxPagesPerJob;
     }
+
+    // RedisScheduler автоматически обеспечит дедупликацию через Redis
 
     @Override
     public void process(final Page page) {
         metrics.getProcessingTimer().record(() -> {
             try {
+                int currentCrawled = processedCount.incrementAndGet();
+                if (maxPagesPerJob > 0 && currentCrawled > maxPagesPerJob) {
+                    log.info("Page limit reached ({}/{}), stopping crawl for job {}",
+                            currentCrawled, maxPagesPerJob, jobId);
+                    page.setSkip(true);
+                    return;
+                }
+
                 // === 1. Базовая валидация URL ===
                 final String currentUrl = page.getUrl().get();
                 if (currentUrl == null) {
@@ -105,6 +119,7 @@ public class CrawlerProcessor implements PageProcessor {
                 final boolean hasKeywords = matches > 0 || score >= 0.1;
                 if (hasKeywords) {
                     final PageContent pageData = new PageContent();
+
                     pageData.setUrl(UrlNormalizer.normalize(currentUrl));
                     pageData.setTitle(extractTitle(page));
                     pageData.setH1(extractH1(page));
@@ -119,9 +134,12 @@ public class CrawlerProcessor implements PageProcessor {
 
                     page.putField("pageContent", pageData);
                     metrics.pageProcessed();
-                    log.info("✓ Saved: {} | matches={} score={}", currentUrl, matches, score);
+
+                    log.debug("Saved page #{}/{}: {} | matches={} score={}",
+                            currentCrawled, maxPagesPerJob, currentUrl, matches, score);
+                    log.info("Saved: {} | matches={} score={}", currentUrl, matches, score);
                 } else {
-                    log.debug("⊗ Skipped (no keywords): {} | matches={} score={}", currentUrl, matches, score);
+                    log.debug("Skipped (no keywords): {} | matches={} score={}", currentUrl, matches, score);
                     metrics.pageSkippedByKeyword();
                 }
 
@@ -150,28 +168,55 @@ public class CrawlerProcessor implements PageProcessor {
         final List<String> links = page.getHtml().links().all();
         int addedCount = 0;
 
+        // ✅ Получаем настройки фильтрации
+        final boolean allowCrossDomain = properties.getFilter().isAllowCrossDomain();
+        final Set<String> allowedDomains = properties.getFilter().getAllowedDomains();
+        final Set<String> blockedDomains = properties.getFilter().getBlockedDomains();
+
+        final String startDomain = DomainUtils.extractDomain(startUrl);
+
         for (String link : links) {
             String normalized = UrlNormalizer.normalize(link);
             if (normalized == null) continue;
 
-            // 1. Фильтр бинарных/мусорных расширений
-            if (normalized.matches(".*\\.(pdf|jpg|png|zip|exe|gif|mp4|mp3|ico|css|js)$")) {
+            // Фильтр расширений
+            if (normalized.matches(".*\\.(pdf|jpg|png|zip|exe|gif|mp4|mp3|ico|css|js|woff|woff2|ttf|svg)$")) {
                 continue;
             }
 
-            // 2. Убираем якоря
-            if (normalized.contains("#")) {
+            // Убираем якоря
+            if (normalized.contains("#")) continue;
+
+            // ✅ ГИБКАЯ ПРОВЕРКА ДОМЕНА
+            final String targetDomain = DomainUtils.extractDomain(normalized);
+
+            if (targetDomain == null) {
+                log.debug("⊗ Skipped (null domain): {}", normalized);
                 continue;
             }
 
-            // 3. Ограничение по домену
-            if (!DomainUtils.isSameDomain(startUrl, normalized)) {
+            // 1. Чёрный список — блокируем всегда
+            if (blockedDomains != null && blockedDomains.contains(targetDomain)) {
+                log.debug("⊗ Skipped (blocked domain): {}", targetDomain);
                 continue;
             }
 
-            // RedisScheduler автоматически проверит дубликаты через ключ set:<jobId>:url
-            // Если ссылка уже была — она молча отбросится, не нужно visited.contains()!
+            // 2. Если cross-domain запрещён — только тот же домен
+            if (!allowCrossDomain) {
+                if (startDomain == null || !startDomain.equals(targetDomain)) {
+                    continue;
+                }
+            }
+            // 3. Если cross-domain разрешён, но есть белый список — проверяем его
+            else if (allowedDomains != null && !allowedDomains.isEmpty()) {
+                if (!allowedDomains.contains(targetDomain)) {
+                    log.debug("⊗ Skipped (not in allowed list): {}", targetDomain);
+                    continue;
+                }
+            }
+            // 4. Иначе — разрешаем любой домен (allowCrossDomain=true, allowedDomains пустой)
 
+            // Дедупликацию делает RedisScheduler
             final Request newRequest = new Request(normalized);
             newRequest.putExtra("startUrl", startUrl);
             newRequest.putExtra("crawlDepth", currentDepth + 1);
@@ -179,37 +224,40 @@ public class CrawlerProcessor implements PageProcessor {
 
             page.addTargetRequest(newRequest);
             addedCount++;
-
-            log.debug("➕ Added to queue: {} (depth: {})", normalized, currentDepth + 1);
+            log.debug("➕ Added to queue: {} (depth: {}, domain: {})",
+                    normalized, currentDepth + 1, targetDomain);
         }
 
         if (addedCount > 0) {
-            log.debug("📦 Added {} links from {} (depth: {})", addedCount, startUrl, currentDepth);
+            log.debug("Added {} links from {} (depth: {})", addedCount, startUrl, currentDepth);
         }
     }
 
     private int countKeywordMatches(final String content, final List<String> keywords) {
-        if (content == null || keywords == null) return 0;
+        if (content == null || keywords == null) {
+            return 0;
+        }
 
-        final String lower = content.toLowerCase(Locale.ROOT);
+        final String lower = content.toLowerCase(Locale.forLanguageTag("ru"));
         int totalMatches = 0;
 
         for (String keyword : keywords) {
-            if (keyword == null || keyword.isBlank()) continue;
+            if (keyword == null || keyword.isBlank()) {
+                continue;
+            }
 
-            // Экранируем спецсимволы и добавляем границы слова
-            final String kw = Pattern.quote(keyword.toLowerCase(Locale.ROOT));
+            final String kw = Pattern.quote(keyword.toLowerCase(Locale.forLanguageTag("ru")));
             final Pattern pattern = Pattern.compile("\\b" + kw + "\\b",
-                    Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+                    Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CHARACTER_CLASS);
             final Matcher matcher = pattern.matcher(lower);
             while (matcher.find()) totalMatches++;
         }
 
-        // ОТЛАДОЧНЫЙ ЛОГ — только если есть совпадения
-        if (totalMatches > 0) {
-            log.info(">>> Keyword matches: keywords={}, count={}, preview='{}'",
+        // Логирование для отладки (всегда, не только при совпадениях)
+        if (log.isDebugEnabled()) {
+            log.debug(">>> Keywords: {}, matches: {}, preview: '{}'",
                     keywords, totalMatches,
-                    lower.substring(0, Math.min(200, lower.length())).replaceAll("\\s+", " "));
+                    lower.substring(0, Math.min(150, lower.length())).replaceAll("\\s+", " "));
         }
 
         return totalMatches;
@@ -253,6 +301,20 @@ public class CrawlerProcessor implements PageProcessor {
 
         String text = html;
 
+        // Попробуем найти <main> или <article> — более точный контент
+        Pattern mainPattern = Pattern.compile("(?is)<(main|article)[^>]*>(.*?)</\\1>", Pattern.DOTALL);
+        Matcher mainMatcher = mainPattern.matcher(html);
+        if (mainMatcher.find()) {
+            text = mainMatcher.group(2);  // Группа 2 — содержимое тега
+        } else {
+            // Фолбэк на <body>
+            Pattern bodyPattern = Pattern.compile("(?is)<body[^>]*>(.*?)</body>", Pattern.DOTALL);
+            Matcher bodyMatcher = bodyPattern.matcher(html);
+            if (bodyMatcher.find()) {
+                text = bodyMatcher.group(1);
+            }
+        }
+
         // 1. Удаляем <script> и содержимое
         text = text.replaceAll("(?is)<script[^>]*>.*?</script>", " ");
         // 2. Удаляем <style> и содержимое
@@ -283,62 +345,81 @@ public class CrawlerProcessor implements PageProcessor {
      */
     private String extractArticleContent(final String html) {
         if (html == null || html.isBlank()) return "";
-
         String content = html;
 
         // 1. Удаляем явно ненужные блоки
-        content = content.replaceAll("(?is)<(script|style|nav|footer|header|aside|form|noscript)[^>]*>.*?</\\1>", " ");
-        content = content.replaceAll("(?is)<[^>]+(class|id)[^>]*=(\"|')[^\"']*(advertisement|banner|sidebar|cookie|popup|widget|social)[^\"']*\\2[^>]*>.*?</[^>]+>", " ");
+        content = content.replaceAll("(?is)<(script|style|nav|footer|header|aside|form|noscript|iframe|svg)[^>]*>.*?</\\1>", " ");
 
-        // 2. Пробуем вытащить <article> или <main> — приоритетный контент
-        Pattern articlePattern = Pattern.compile("(?is)<(article|main)[^>]*>(.*?)</\\1>", Pattern.DOTALL);
-        Matcher matcher = articlePattern.matcher(content);
-        if (matcher.find()) {
-            content = matcher.group(2);
-        } else {
-            // Если нет article/main — берём <div class="content"> или аналогичный
-            Pattern contentPattern = Pattern.compile("(?is)<div[^>]*class=\"[^\"]*(content|post|article|entry)[^\"]*\"[^>]*>(.*?)</div>", Pattern.DOTALL);
-            Matcher contentMatcher = contentPattern.matcher(content);
-            if (contentMatcher.find()) {
-                content = contentMatcher.group(2);
+        // 2. Удаляем блоки по классам/атрибутам (реклама, виджеты)
+        content = content.replaceAll("(?is)<[^>]+(class|id)[^>]*=(\"|')[^\"']*(advertisement|banner|sidebar|cookie|popup|widget|social|share|related|comments|recommendations)[^\"']*\\2[^>]*>.*?</[^>]+>", " ");
+
+        // 3. Приоритетные теги для контента
+        String[] contentSelectors = {
+                "(?is)<(article|main)[^>]*>(.*?)</\\1>",
+                "(?is)<div[^>]*class=\"[^\"]*(content|post|article|entry|news|story)[^\"]*\"[^>]*>(.*?)</div>",
+                "(?is)<div[^>]*id=\"[^\"]*(content|post|article|entry|news|story)[^\"]*\"[^>]*>(.*?)</div>",
+                "(?is)<section[^>]*class=\"[^\"]*(content|post|article|entry)[^\"]*\"[^>]*>(.*?)</section>"
+        };
+
+        for (String selector : contentSelectors) {
+            Pattern pattern = Pattern.compile(selector, Pattern.DOTALL);
+            Matcher matcher = pattern.matcher(content);
+            if (matcher.find()) {
+                // Группа 2 — содержимое, если есть, иначе группа 1
+                content = matcher.groupCount() >= 2 ? matcher.group(2) : matcher.group(1);
+                break;
             }
         }
 
-        // 3. Удаляем все оставшиеся теги
+        // 4. Удаляем все оставшиеся теги
         content = content.replaceAll("<[^>]+>", " ");
 
-        // 4. Декодируем HTML-сущности
+        // 5. Декодируем HTML-сущности
         content = content.replaceAll("&nbsp;", " ")
                 .replaceAll("&amp;", "&")
                 .replaceAll("&lt;", "<")
                 .replaceAll("&gt;", ">")
                 .replaceAll("&quot;", "\"")
+                .replaceAll("&apos;", "'")
                 .replaceAll("&#\\d+;", " ")
                 .replaceAll("&#[xX][0-9a-fA-F]+;", " ");
 
-        // 5. Чистим пробелы и обрезаем
-        content = content.replaceAll("\\s+", " ").trim();
+        // 6. Чистим пробелы и нормализуем
+        content = content.replaceAll("[\\s\\u00A0]+", " ").trim();
 
-        // 6. Возвращаем только если достаточно длинный
-        return content.length() < properties.getFilter().getMinContentLength() ? "" : content;
+        // 7. Возвращаем только если достаточно длинный
+        return content.length() < properties.getFilter().getMinContentLength() ? "" :
+                (content.length() > 50000 ? content.substring(0, 50000) : content);
     }
 
     /**
      * Возвращает сниппет текста вокруг первого вхождения ключевого слова.
      */
-    private String extractKeywordSnippet(String content, List<String> keywords, int contextChars) {
-        if (content == null || keywords == null) return "";
-        String lower = content.toLowerCase(Locale.ROOT);
+    private String extractKeywordSnippet(final String content,
+                                         final List<String> keywords,
+                                         final int contextChars) {
+        if (content == null || keywords == null) {
+            return "";
+        }
+
         for (String kw : keywords) {
-            if (kw == null || kw.isBlank()) continue;
-            int pos = lower.indexOf(kw.toLowerCase());
-            if (pos != -1) {
+            if (kw == null || kw.isBlank()) {
+                continue;
+            }
+
+            Pattern p = Pattern.compile("\\b" + Pattern.quote(kw) + "\\b",
+                    Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CHARACTER_CLASS);
+            Matcher m = p.matcher(content);
+
+            if (m.find()) {
+                int pos = m.start();
                 int start = Math.max(0, pos - contextChars);
-                int end = Math.min(content.length(), pos + kw.length() + contextChars);
+                int end = Math.min(content.length(), m.end() + contextChars);
                 String snippet = content.substring(start, end).replaceAll("\\s+", " ").trim();
                 return (start > 0 ? "…" : "") + snippet + (end < content.length() ? "…" : "");
             }
         }
+
         return content.length() > 300 ? content.substring(0, 300) + "…" : content;
     }
 
@@ -352,6 +433,7 @@ public class CrawlerProcessor implements PageProcessor {
                 .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
                         "AppleWebKit/537.36 (KHTML, like Gecko) " +
                         "Chrome/120.0.0.0 Safari/537.36")
+                .setCycleRetryTimes(3)
                 .setCharset("UTF-8")
                 .addHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 .addHeader("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")

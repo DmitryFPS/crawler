@@ -48,11 +48,14 @@ public class TfIdfRankingService implements RankingService {
     private int countTermFrequency(final String text, final String term) {
         // Используем границы слов для точного совпадения
         final String regex = "\\b" + Pattern.quote(term.toLowerCase()) + "\\b";
-        final Pattern pattern = Pattern.compile(regex);
+        final Pattern pattern = Pattern.compile(regex, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CHARACTER_CLASS);
         final Matcher matcher = pattern.matcher(text.toLowerCase());
 
         int count = 0;
-        while (matcher.find()) count++;
+        while (matcher.find()) {
+            count++;
+        }
+
         return count;
     }
 
@@ -73,12 +76,17 @@ public class TfIdfRankingService implements RankingService {
                                   final String keyword) {
         double boost = 1.0;
 
-        // Сильный буст за заголовок страницы
-        if (title != null && title.toLowerCase().contains(keyword)) {
+        // Используем границы слов для точного совпадения
+        final String kw = Pattern.quote(keyword.toLowerCase(Locale.ROOT));
+        final Pattern pattern = Pattern.compile("\\b" + kw + "\\b",
+                Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CHARACTER_CLASS);
+
+        // Проверка заголовка
+        if (title != null && pattern.matcher(title).find()) {
             boost *= 5.0;
         }
-        // Буст за H1
-        if (h1 != null && h1.toLowerCase().contains(keyword)) {
+        // Проверка H1
+        if (h1 != null && pattern.matcher(h1).find()) {
             boost *= 3.0;
         }
 

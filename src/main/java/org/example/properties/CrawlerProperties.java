@@ -4,6 +4,8 @@ import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.Set;
+
 @ConfigurationProperties(prefix = "crawler")
 @Getter
 @Setter
@@ -11,7 +13,8 @@ public class CrawlerProperties {
     private int threads = 10;
     private int timeout = 10000;
     private int sleep = 1000;
-    private int maxDepth = 10;
+    private int maxDepth = 100;
+    private int maxPagesPerJob = 1000;
     private Retry retry = new Retry();
     private RateLimit rateLimit = new RateLimit();
     private Filter filter = new Filter();
@@ -35,6 +38,9 @@ public class CrawlerProperties {
     @Setter
     public static class Filter {
         private boolean urlsByKeywords = false;
+        private boolean allowCrossDomain = false;
         private int minContentLength = 200;
+        private Set<String> allowedDomains = Set.of();
+        private Set<String> blockedDomains = Set.of();
     }
 }
