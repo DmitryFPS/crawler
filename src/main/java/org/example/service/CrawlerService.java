@@ -69,9 +69,9 @@ public class CrawlerService {
                 .setScheduler(new RedisScheduler(jedisPool));
 
         spider.setUUID(jobId);
-        log.info("🔴 [DEBUG] UUID после setUUID: '{}'", spider.getUUID());
+        log.info("[DEBUG] UUID после setUUID: '{}'", spider.getUUID());
         if (spider.getUUID() == null) {
-            log.error("❌ FAILED to set UUID! This will break RedisScheduler.");
+            log.error("FAILED to set UUID! This will break RedisScheduler.");
         }
 
         spider.addUrl(request.getUrl())
@@ -79,16 +79,16 @@ public class CrawlerService {
                 .thread(threads)
                 .setDownloader(new SeleniumDownloader(seleniumHub));
 
-        // 🔴 Проверяем очередь с ПРАВИЛЬНЫМ форматом ключа
+        // Проверяем очередь с ПРАВИЛЬНЫМ форматом ключа
         try (Jedis jedis = jedisPool.getResource()) {
             String queueKey = "queue_" + jobId;  // ← правильный формат!
             Long queueSize = jedis.llen(queueKey);
-            log.info("🔴 [REDIS] Queue '{}' size: {}", queueKey, queueSize);
+            log.info("[REDIS] Queue '{}' size: {}", queueKey, queueSize);
 
             // Также проверьте ключи с префиксом "queue_" и "set_"
             var queueKeys = jedis.keys("queue_" + jobId + "*");
             var setKeys = jedis.keys("set_" + jobId + "*");
-            log.info("🔴 [REDIS] Found queue keys: {}, set keys: {}", queueKeys, setKeys);
+            log.info("[REDIS] Found queue keys: {}, set keys: {}", queueKeys, setKeys);
         }
 
         log.info("Registering PostgresPipeline for job {}", jobId);
@@ -100,7 +100,7 @@ public class CrawlerService {
         spiderThreads.put(jobId, thread);
 
         thread.setUncaughtExceptionHandler((t, e) ->
-                log.error("❌ Uncaught exception in crawler thread {}: {}", t.getName(), e.getMessage(), e)
+                log.error("Uncaught exception in crawler thread {}: {}", t.getName(), e.getMessage(), e)
         );
 
         thread.start();

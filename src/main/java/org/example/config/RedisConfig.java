@@ -28,7 +28,7 @@ public class RedisConfig {
         }
 
         Thread.setDefaultUncaughtExceptionHandler((t, e) ->
-                log.error("❌ Global uncaught exception in thread {}: {}", t.getName(), e.getMessage(), e)
+                log.error("Global uncaught exception in thread {}: {}", t.getName(), e.getMessage(), e)
         );
     }
 
