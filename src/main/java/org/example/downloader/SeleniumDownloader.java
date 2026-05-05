@@ -45,7 +45,7 @@ public class SeleniumDownloader implements Downloader, AutoCloseable {
         try {
             log.debug("Downloading with Selenium: {} (hub: {})", pageUrl, seleniumHubUrl);
 
-            // 🔽 Настройки Chrome
+            // Настройки Chrome
             ChromeOptions options = new ChromeOptions();
             options.addArguments("--headless=new");
             options.addArguments("--no-sandbox");
@@ -56,7 +56,7 @@ public class SeleniumDownloader implements Downloader, AutoCloseable {
             options.setExperimentalOption("excludeSwitches", new String[]{"enable-automation"});
             options.setExperimentalOption("useAutomationExtension", false);
 
-            // 🔽 ОБХОД ДЕТЕКТОВ АВТОМАТИЗАЦИИ:
+            // ОБХОД ДЕТЕКТОВ АВТОМАТИЗАЦИИ:
             options.addArguments("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
             options.addArguments("--lang=ru-RU,ru,en;q=0.9");
             options.addArguments("--disable-webgl");
@@ -133,7 +133,7 @@ public class SeleniumDownloader implements Downloader, AutoCloseable {
 
     private void waitForContent(WebDriver driver) {
         try {
-            // 🔽 Ждать только появления body с минимальным текстом (не сложные селекторы!)
+            // Ждать только появления body с минимальным текстом (не сложные селекторы!)
             new WebDriverWait(driver, Duration.ofSeconds(10))
                     .until(d -> {
                         try {
