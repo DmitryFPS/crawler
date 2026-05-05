@@ -27,23 +27,28 @@ crawler:
       url: http://localhost:4444/wd/hub
     chrome:
       options: "--window-size=1920,1080 --headless=new --disable-gpu --no-sandbox"
-  # Гибкие настройки фильтрации
+  # КРИТИЧЕСКИ ВАЖНЫЕ настройки фильтрации
   filter:
     urls-by-keywords: false
-    allow-cross-domain: true
+    allow-cross-domain: false          # ← ЗАПРЕТ перехода на другие домены!
     min-content-length: 200
-    allowed-domains: [ ]
-  # Настройки повторных попыток и задержек
+    allowed-domains: [ ]                # ← пусто = только стартовый домен
+    blocked-domains: [ ]                # ← можно добавить: [google.com, facebook.com]
+  # Настройки повторных попыток
   retry:
-    max-attempts: 3
-    sleep: 3000
-    exponential: true
+    max-attempts: 2                    # ← меньше = быстрее падает при ошибках
+    sleep: 1000                        # ← 1 сек вместо 3
+    exponential: false                 # ← линейная задержка предсказуемее
+  # ⚡ Реальный rate-limit (требует реализации в коде, пока — документация)
   rate-limit:
     enabled: true
-    requests-per-minute: 20  # Снижено для обхода анти-бота
-  threads: 5  # Меньше потоков = меньше шансов получить бан
-  max-depth: 10
-  max-pages-per-job: 1000  # Ограничение, чтобы не улететь в бесконечный краулинг
+    requests-per-minute: 60            # ← 1 запрос в секунду — безопасно
+  # Потоки и лимиты
+  threads: 3                           # ← Должно совпадать с SE_NODE_MAX_SESSIONS!
+  timeout: 30000                       # ← 30 сек на загрузку страницы
+  sleep: 500                           # ← Базовая задержка между запросами
+  max-depth: 10                        # ← уровни глубины
+  max-pages-per-job: 2000              # ← лимит на количество обработанных страниц за один запуск краулера
 
 management:
   endpoints:
@@ -58,7 +63,7 @@ management:
       prometheus:
         enabled: true
 
-# Детальное логирование для отладки
+# Логирование
 logging:
   level:
     root: INFO

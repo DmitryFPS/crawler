@@ -7,6 +7,8 @@ import org.example.service.MetricsService;
 import org.example.service.RankingService;
 import org.example.util.DomainUtils;
 import org.example.util.UrlNormalizer;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
 import us.codecraft.webmagic.Page;
 import us.codecraft.webmagic.Request;
 import us.codecraft.webmagic.Site;
@@ -15,6 +17,7 @@ import us.codecraft.webmagic.processor.PageProcessor;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -29,8 +32,10 @@ public class CrawlerProcessor implements PageProcessor {
     private final String jobId;
     private final int maxDepth;
     private final int maxPagesPerJob;
+    private final JedisPool jedisPool;
 
     private final AtomicInteger processedCount = new AtomicInteger(0);
+    private final AtomicBoolean shouldStop = new AtomicBoolean(false);
 
     public CrawlerProcessor(final MetricsService metrics,
                             final CrawlerProperties properties,
@@ -38,7 +43,8 @@ public class CrawlerProcessor implements PageProcessor {
                             final List<String> keywords,
                             final String jobId,
                             final int maxDepth,
-                            final int maxPagesPerJob) {
+                            final int maxPagesPerJob,
+                            final JedisPool jedisPool) {
         this.metrics = metrics;
         this.properties = properties;
         this.rankingService = rankingService;
@@ -46,6 +52,7 @@ public class CrawlerProcessor implements PageProcessor {
         this.jobId = jobId;
         this.maxDepth = maxDepth;
         this.maxPagesPerJob = maxPagesPerJob;
+        this.jedisPool = jedisPool;
     }
 
     // RedisScheduler автоматически обеспечит дедупликацию через Redis
@@ -58,6 +65,12 @@ public class CrawlerProcessor implements PageProcessor {
                 if (maxPagesPerJob > 0 && currentCrawled > maxPagesPerJob) {
                     log.info("Page limit reached ({}/{}), stopping crawl for job {}",
                             currentCrawled, maxPagesPerJob, jobId);
+                    shouldStop.set(true);
+                    // Очищаем Redis-очередь, чтобы WebMagic сразу завершился
+                    try (Jedis jedis = jedisPool.getResource()) {
+                        jedis.del("queue_" + jobId);
+                        jedis.del("set_" + jobId + ":url");
+                    }
                     page.setSkip(true);
                     return;
                 }
@@ -161,7 +174,7 @@ public class CrawlerProcessor implements PageProcessor {
     private void addFilteredLinks(final Page page,
                                   final String startUrl,
                                   final int currentDepth) {
-        if (currentDepth >= maxDepth) {
+        if (currentDepth >= maxDepth || shouldStop.get()) {
             return;
         }
 

@@ -61,7 +61,8 @@ public class CrawlerService {
                 request.getKeywords(),
                 jobId,
                 request.getMaxDepth() != null ? request.getMaxDepth() : properties.getMaxDepth(),
-                properties.getMaxPagesPerJob()
+                properties.getMaxPagesPerJob(),
+                jedisPool
         );
 
         final int threads = request.getThreads() != null && request.getThreads() > 0

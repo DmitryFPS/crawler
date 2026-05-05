@@ -20,7 +20,7 @@ import java.util.Map;
 public class SeleniumDownloader implements Downloader, AutoCloseable {
 
     private final String seleniumHubUrl;
-    private final Duration pageLoadTimeout = Duration.ofSeconds(120);
+    private final Duration pageLoadTimeout = Duration.ofSeconds(30);
 
     public SeleniumDownloader(final String hubUrl) {
         // Проверка URL
@@ -86,6 +86,9 @@ public class SeleniumDownloader implements Downloader, AutoCloseable {
 
             // Подключение к Selenium Hub с проверкой
             final URL hubUrl = new URL(seleniumHubUrl);
+
+            options.setCapability("se:connectTimeout", 10000);      // 10 сек на подключение к хабу
+            options.setCapability("se:pageLoadTimeout", 30000);     // 30 сек на загрузку страницы
 
             driver = new RemoteWebDriver(hubUrl, options);
             driver.manage().timeouts().pageLoadTimeout(pageLoadTimeout);
@@ -186,8 +189,9 @@ public class SeleniumDownloader implements Downloader, AutoCloseable {
             try {
                 new WebDriverWait(driver, Duration.ofSeconds(3))
                         .until(d ->
-                                d.findElements(By.cssSelector("article, .content, .post, [itemprop='articleBody']"))
-                                        .size() > 0
+                                d.findElements(
+                                        By.cssSelector("article, .content, .post, [itemprop='articleBody']")
+                                ).size() > 0
                         );
 
             } catch (TimeoutException ignored) {
